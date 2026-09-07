@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24
+        env:
+          POSTGRES_USER: resolver
+          POSTGRES_PASSWORD: resolver
+          POSTGRES_DB: resolver_network_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U resolver -d resolver_network_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://resolver:resolver@localhost:5432/resolver_network_test?sslmode=disable
+      DATABASE_URL: postgres://resolver:resolver@localhost:5432/resolver_network_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go run ./cmd/migrate up
+      - run: go run ./cmd/migrate status
+      - run: go test ./...

@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+!.env.example
+bin
+coverage.out
+README.md
+**/*_test.go
+**/.DS_Store

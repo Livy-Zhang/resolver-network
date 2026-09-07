@@ -1,0 +1,22 @@
+name: resolver-network-test
+
+services:
+  postgres-test:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_USER: resolver
+      POSTGRES_PASSWORD: resolver
+      POSTGRES_DB: resolver_network_test
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resolver -d resolver_network_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-test-data:

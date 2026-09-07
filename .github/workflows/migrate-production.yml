@@ -1,0 +1,20 @@
+name: Migrate production database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATOR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -n "$DATABASE_URL"
+      - run: go run ./cmd/migrate up
+      - run: go run ./cmd/migrate status
