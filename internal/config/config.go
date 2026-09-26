@@ -3,6 +3,7 @@ package config
 // reads environment variables and provides a structured configuration object
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 )
@@ -25,16 +26,17 @@ func LoadAPI() (Config, error) {
 }
 
 func load(requireChain bool) (Config, error) {
+	databaseURL, err := databaseURLFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		HTTPAddr:                 envOrDefault("HTTP_ADDR", "127.0.0.1:8080"),
-		DatabaseURL:              os.Getenv("DATABASE_URL"),
-		DatabaseReadURL:          envOrDefault("DATABASE_READ_URL", os.Getenv("DATABASE_URL")),
+		DatabaseURL:              databaseURL,
+		DatabaseReadURL:          envOrDefault("DATABASE_READ_URL", databaseURL),
 		GraphEndpoint:            os.Getenv("GRAPH_ENDPOINT"),
 		RPCURL:                   os.Getenv("RPC_URL"),
 		RewardsUpdaterPrivateKey: os.Getenv("REWARDS_UPDATER_PRIVATE_KEY"),
-	}
-	if c.DatabaseURL == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
 	if requireChain && c.GraphEndpoint == "" {
 		return Config{}, fmt.Errorf("GRAPH_ENDPOINT is required")
@@ -64,9 +66,40 @@ func envOrDefault(name, fallback string) string {
 }
 
 func LoadMigration() (Config, error) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	databaseURL, err := databaseURLFromEnv()
+	if err != nil {
+		return Config{}, err
 	}
-	return Config{DatabaseURL: url}, nil
+	return Config{DatabaseURL: databaseURL}, nil
+}
+
+// databaseURLFromEnv supports both a conventional DATABASE_URL and the
+// separate fields exposed by the RDS-managed Secrets Manager secret. The
+// latter lets ECS inject the generated password without duplicating it in a
+// second secret or requiring callers to URL-escape it.
+func databaseURLFromEnv() (string, error) {
+	if value := os.Getenv("DATABASE_URL"); value != "" {
+		return value, nil
+	}
+
+	host := os.Getenv("DATABASE_HOST")
+	user := os.Getenv("DATABASE_USER")
+	password := os.Getenv("DATABASE_PASSWORD")
+	if host == "" || user == "" || password == "" {
+		return "", fmt.Errorf("DATABASE_URL or DATABASE_HOST, DATABASE_USER, and DATABASE_PASSWORD are required")
+	}
+
+	databaseName := envOrDefault("DATABASE_NAME", "resolver_network")
+	port := envOrDefault("DATABASE_PORT", "5432")
+	sslMode := envOrDefault("DATABASE_SSLMODE", "require")
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   net.JoinHostPort(host, port),
+		Path:   "/" + databaseName,
+	}
+	q := u.Query()
+	q.Set("sslmode", sslMode)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
