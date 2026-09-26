@@ -1,0 +1,80 @@
+name: Publish image to ECR
+
+on:
+  push:
+    branches: [main]
+
+# id-token permits this workflow to exchange a GitHub OIDC token for the
+# short-lived AWS credentials granted by AWS_ECR_PUBLISH_ROLE_ARN.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-and-publish:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24
+        env:
+          POSTGRES_USER: resolver
+          POSTGRES_PASSWORD: resolver
+          POSTGRES_DB: resolver_network_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U resolver -d resolver_network_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://resolver:resolver@localhost:5432/resolver_network_test?sslmode=disable
+      DATABASE_URL: postgres://resolver:resolver@localhost:5432/resolver_network_test?sslmode=disable
+      ECR_REPOSITORY: resolver-network
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Apply test migrations
+        run: go run ./cmd/migrate up
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Check whether this immutable image tag already exists
+        id: image
+        run: |
+          if aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
+        if: steps.image.outputs.exists != 'true'
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build --tag "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Report existing immutable image tag
+        if: steps.image.outputs.exists == 'true'
+        run: echo "Image $ECR_REPOSITORY:$IMAGE_TAG already exists; skipping push."
