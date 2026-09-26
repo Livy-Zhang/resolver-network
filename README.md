@@ -59,6 +59,53 @@ docker compose --profile workers run --rm monthly-workflow
 
 `monthly-workflow` runs `settlement-worker`, then `merkle-worker`, then `root-worker`; it stops if any step fails. Docker Compose does not schedule this command by itself. For automatic monthly execution on a cloud server, trigger this command with a server scheduler such as a systemd timer.
 
+### Worker design
+
+The service has four workers:
+
+- `settlement-worker` calculates delegation weights and persists the completed
+  month's settlement data.
+- `merkle-worker` turns the settled data into reward allocations and Merkle
+  roots.
+- `root-worker` submits a root or performs one status check for one month. The
+  monthly workflow invokes it with `--once` after the settlement and Merkle
+  stages, so the monthly run always exits after one pass.
+- `root-poller` scans every month that still has pending root work. It checks
+  transaction receipts, performs eligible replacement transactions, and marks
+  a root confirmed only when its on-chain epoch becomes `Claimable`.
+
+The monthly systemd timer runs `monthly-workflow` at `00:30 UTC` on the first
+day of each month. The independent root-poller timer runs every five minutes,
+so a resolver's later `confirmRoot` transaction is reflected without blocking
+the next month's workflow.
+
+### systemd monthly timer
+
+The repository includes a systemd timer for an EC2 host where the checkout is at
+`/opt/resolver-network`. It runs the workflow at `00:30 UTC` on the first day of
+every month. `Persistent=true` causes a missed run to execute after the host next
+starts.
+
+```bash
+sudo cp deploy/systemd/resolver-network-monthly.service /etc/systemd/system/
+sudo cp deploy/systemd/resolver-network-monthly.timer /etc/systemd/system/
+sudo cp deploy/systemd/resolver-network-root-poller.service /etc/systemd/system/
+sudo cp deploy/systemd/resolver-network-root-poller.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now resolver-network-monthly.timer
+sudo systemctl enable --now resolver-network-root-poller.timer
+systemctl list-timers resolver-network-monthly.timer
+```
+
+If the project lives at a different path, update `WorkingDirectory` and
+`--project-directory` in `resolver-network-monthly.service` before installing it.
+
+The monthly workflow runs `root-worker --once`, so it submits or checks roots
+without waiting indefinitely for a resolver confirmation. The separate
+`root-poller` timer runs every five minutes and scans every month with pending
+root work. It updates a submission to `confirmed` only once its on-chain epoch
+is `Claimable`.
+
 The monthly settlement workflow is idempotent: repeated runs for the same month produce the same result. It does not implement a distributed mutex for settlement workers, so deployments must run a single instance. Database migrations use a PostgreSQL advisory lock to prevent concurrent execution.
 
 All three workers use the previous complete UTC calendar month when `--month` is omitted.

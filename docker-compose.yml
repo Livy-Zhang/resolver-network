@@ -59,5 +59,17 @@ services:
     profiles: ["workers"]
     restart: "no"
 
+  root-poller:
+    image: resolver-network:local
+    env_file: .env
+    command: ["/app/root-poller"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["workers"]
+    restart: "no"
+
 volumes:
   postgres-data:

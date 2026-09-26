@@ -35,6 +35,7 @@ func main() {
 func Run(ctx context.Context, args []string, cfg config.Config) error {
 	fs := flag.NewFlagSet("root-worker", flag.ContinueOnError)
 	monthArg := fs.String("month", "", "YYYYMM (defaults to the previous UTC month)")
+	once := fs.Bool("once", false, "process pending roots once and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,7 +63,12 @@ func Run(ctx context.Context, args []string, cfg config.Config) error {
 	defer submitter.Close()
 	worker := monthly.RootWorker{DB: db, Submitter: submitter, Month: month, BatchSize: 50}
 	slog.Info("root transaction worker started", "status", "started")
-	if err = worker.RunUntilIdle(ctx, time.Minute); err != nil && ctx.Err() == nil {
+	if *once {
+		err = worker.RunOnce(ctx)
+	} else {
+		err = worker.RunUntilIdle(ctx, time.Minute)
+	}
+	if err != nil && ctx.Err() == nil {
 		return err
 	}
 	return ctx.Err()

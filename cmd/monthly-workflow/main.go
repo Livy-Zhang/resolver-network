@@ -22,7 +22,11 @@ func main() {
 type workerRunner func(string, string) error
 
 func runWorker(name, month string) error {
-	cmd := exec.Command("/app/"+name, "--month", month)
+	args := []string{"--month", month}
+	if name == "root-worker" {
+		args = append(args, "--once")
+	}
+	cmd := exec.Command("/app/"+name, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s failed: %w", name, err)

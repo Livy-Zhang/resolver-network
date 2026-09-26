@@ -167,6 +167,27 @@ type PendingRootSubmission struct {
 	Attempts                                                                int
 }
 
+// PendingRootSubmissionMonths returns months that require one more root-worker pass.
+func (d *DB) PendingRootSubmissionMonths(ctx context.Context, limit int) ([]time.Time, error) {
+	if limit < 1 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := d.Pool.Query(ctx, `SELECT DISTINCT r.month_start FROM monthly_root_submissions r JOIN monthly_workflows w ON w.month_start=r.month_start AND w.status IN ('root_pending','root_processing','confirmed') WHERE r.root_submission_status IN ('not_submitted','submitted') OR (r.root_submission_status='processing' AND r.updated_at < now() - interval '20 minutes') OR (r.root_submission_status='failed' AND (r.next_retry_at IS NULL OR r.next_retry_at <= now())) ORDER BY r.month_start LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	months := []time.Time{}
+	for rows.Next() {
+		var month time.Time
+		if err = rows.Scan(&month); err != nil {
+			return nil, err
+		}
+		months = append(months, month)
+	}
+	return months, rows.Err()
+}
+
 func (d *DB) ListPendingRootSubmissions(ctx context.Context, month time.Time, limit int) ([]PendingRootSubmission, error) {
 	if limit < 1 || limit > 1000 {
 		limit = 100

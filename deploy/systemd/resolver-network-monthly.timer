@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule Resolver Network monthly settlement workflow
+
+[Timer]
+OnCalendar=*-*-01 00:30:00 UTC
+Persistent=true
+Unit=resolver-network-monthly.service
+
+[Install]
+WantedBy=timers.target

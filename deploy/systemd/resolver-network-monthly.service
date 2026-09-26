@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Resolver Network monthly settlement workflow
+Wants=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/resolver-network
+ExecStart=/usr/bin/docker compose --project-directory /opt/resolver-network --profile workers run --rm monthly-workflow
+TimeoutStartSec=infinity

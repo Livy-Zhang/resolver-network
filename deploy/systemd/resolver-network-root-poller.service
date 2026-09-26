@@ -1,0 +1,9 @@
+[Unit]
+Description=Poll Resolver Network root submission status
+Wants=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/resolver-network
+ExecStart=/usr/bin/docker compose --project-directory /opt/resolver-network --profile workers run --rm root-poller

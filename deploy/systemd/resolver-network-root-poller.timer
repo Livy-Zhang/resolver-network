@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Resolver Network root submission status polling
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=resolver-network-root-poller.service
+
+[Install]
+WantedBy=timers.target
