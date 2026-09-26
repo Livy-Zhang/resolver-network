@@ -45,6 +45,28 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      # This prints selected, non-secret OIDC claims so the AWS trust policy can
+      # be restricted to the exact GitHub subject. It never prints the JWT.
+      - name: Display OIDC identity claims
+        run: |
+          node --input-type=module <<'NODE'
+          const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          url.searchParams.set('audience', 'sts.amazonaws.com');
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+          });
+          if (!response.ok) throw new Error(`OIDC token request failed: ${response.status}`);
+          const { value: token } = await response.json();
+          const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+          console.log(JSON.stringify({
+            aud: claims.aud,
+            sub: claims.sub,
+            repository: claims.repository,
+            ref: claims.ref,
+            environment: claims.environment,
+          }, null, 2));
+          NODE
+
       - name: Configure temporary AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
