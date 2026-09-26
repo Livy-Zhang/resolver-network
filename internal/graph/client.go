@@ -67,6 +67,7 @@ type row struct {
 	Timestamp   string `json:"timestamp"`
 	BlockNumber string `json:"blockNumber"`
 	LogIndex    string `json:"logIndex"`
+	Anomaly     string `json:"anomaly"`
 }
 type result struct {
 	Data struct {
@@ -110,6 +111,7 @@ type configRow struct {
 	Timestamp      string `json:"timestamp"`
 	BlockNumber    string `json:"blockNumber"`
 	LogIndex       string `json:"logIndex"`
+	Anomaly        string `json:"anomaly"`
 }
 
 type metaResult struct {
@@ -126,7 +128,7 @@ type metaResult struct {
 	} `json:"errors"`
 }
 
-const query = `query E($first:Int!,$before:BigInt!,$from:BigInt,$block:Int!,$delegatedAfter:ID!,$undelegatedAfter:ID!,$redelegatedAfter:ID!){delegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$delegatedAfter}){id delegator resolver amount timestamp blockNumber logIndex} undelegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$undelegatedAfter}){id delegator resolver amount timestamp blockNumber logIndex} redelegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$redelegatedAfter}){id delegator oldResolver newResolver amount timestamp blockNumber logIndex}}`
+const query = `query E($first:Int!,$before:BigInt!,$from:BigInt,$block:Int!,$delegatedAfter:ID!,$undelegatedAfter:ID!,$redelegatedAfter:ID!){delegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$delegatedAfter}){id delegator resolver amount timestamp blockNumber logIndex} undelegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$undelegatedAfter}){id delegator resolver amount anomaly timestamp blockNumber logIndex} redelegatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_lt:$before,timestamp_gte:$from,id_gt:$redelegatedAfter}){id delegator oldResolver newResolver amount anomaly timestamp blockNumber logIndex}}`
 
 func (c *Client) Events(ctx context.Context, from *time.Time, before time.Time, atBlock int64) ([]delegation.Event, error) {
 	if c.endpoint == "" {
@@ -270,7 +272,7 @@ func (c *Client) Meta(ctx context.Context) (Meta, error) {
 }
 
 const createdForMonthQuery = `query Created($first:Int!,$from:BigInt!,$to:BigInt!,$after:ID!,$block:Int!){ distributorCreatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_gte:$from,timestamp_lt:$to,id_gt:$after}){id resolver distributor rewardsUpdater rewardAddress rewardRate timestamp blockNumber logIndex}}`
-const updatedForMonthQuery = `query Updated($first:Int!,$from:BigInt!,$to:BigInt!,$after:ID!,$block:Int!){ rewardRateUpdatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_gte:$from,timestamp_lt:$to,id_gt:$after}){id resolver distributor rewardAddress rewardRate:newRewardRate timestamp blockNumber logIndex}}`
+const updatedForMonthQuery = `query Updated($first:Int!,$from:BigInt!,$to:BigInt!,$after:ID!,$block:Int!){ rewardRateUpdatedEvents(first:$first,orderBy:id,orderDirection:asc,block:{number:$block},where:{timestamp_gte:$from,timestamp_lt:$to,id_gt:$after}){id resolver distributor rewardAddress rewardRate:newRewardRate anomaly timestamp blockNumber logIndex}}`
 
 // RewardRateEvents returns creation and rate-update actions in one natural month.
 func (c *Client) RewardRateEvents(ctx context.Context, from, to time.Time, atBlock int64) ([]RewardRateEvent, error) {
@@ -312,6 +314,9 @@ func (c *Client) RewardRateEvents(ctx context.Context, from, to time.Time, atBlo
 				rs = r.Data.Updated
 			}
 			for _, x := range rs {
+				if x.Anomaly != "" {
+					return nil, fmt.Errorf("anomalous reward-rate event %s: %s", x.ID, x.Anomaly)
+				}
 				ts, e := strconv.ParseInt(x.Timestamp, 10, 64)
 				if e != nil {
 					return nil, e
@@ -402,6 +407,9 @@ func convert(r result) ([]delegation.Event, error) {
 	out := []delegation.Event{}
 	f := func(k delegation.Kind, rs []row) error {
 		for _, x := range rs {
+			if x.Anomaly != "" {
+				return fmt.Errorf("anomalous %s event %s: %s", k, x.ID, x.Anomaly)
+			}
 			if x.ID == "" || x.Delegator == "" {
 				return fmt.Errorf("invalid %s event identity", k)
 			}

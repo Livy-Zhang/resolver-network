@@ -1,4 +1,5 @@
 package rewards
+
 // Root Submitter signs and submits transactions to RewardsDistributor contracts to submit Merkle roots for each epoch
 import (
 	"context"
@@ -17,19 +18,39 @@ import (
 
 const distributorABI = `[
 {"type":"function","name":"submitRoot","stateMutability":"nonpayable","inputs":[{"name":"epochId","type":"uint256"},{"name":"merkleRoot","type":"bytes32"},{"name":"totalReward","type":"uint256"}],"outputs":[]},
+{"type":"function","name":"confirmRoot","stateMutability":"nonpayable","inputs":[{"name":"epochId","type":"uint256"}],"outputs":[]},
 {"type":"function","name":"rewardsUpdater","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"address"}]},
 {"type":"function","name":"epochs","stateMutability":"view","inputs":[{"name":"epochId","type":"uint256"}],"outputs":[{"name":"merkleRoot","type":"bytes32"},{"name":"totalReward","type":"uint256"},{"name":"status","type":"uint8"}]}
 ]`
 
+const (
+	EpochStatusNone uint8 = iota
+	EpochStatusPending
+	EpochStatusClaimable
+)
+
 // Submitter signs transactions as the account configured as rewardsUpdater in
 // each RewardsDistributor clone.
 type Submitter struct {
-	client  *ethclient.Client
+	client  submitterClient
 	key     *ecdsa.PrivateKey
 	from    common.Address
 	chainID *big.Int
 	abi     abi.ABI
 	lastTx  TxMetadata
+}
+
+// submitterClient is limited to the RPC methods used to prepare, sign, send, and inspect
+// root-submission transactions. It permits using go-ethereum's simulated chain in tests.
+type submitterClient interface {
+	ethereum.ChainIDReader
+	ethereum.ChainReader
+	ethereum.ContractCaller
+	ethereum.GasEstimator
+	ethereum.GasPricer1559
+	ethereum.PendingStateReader
+	ethereum.TransactionReader
+	ethereum.TransactionSender
 }
 
 type TxMetadata struct {
@@ -62,7 +83,11 @@ func NewSubmitter(ctx context.Context, rpcURL, privateKeyHex string) (*Submitter
 	return &Submitter{client: client, key: key, from: crypto.PubkeyToAddress(key.PublicKey), chainID: chainID, abi: parsed}, nil
 }
 
-func (s *Submitter) Close()               { s.client.Close() }
+func (s *Submitter) Close() {
+	if client, ok := s.client.(interface{ Close() }); ok {
+		client.Close()
+	}
+}
 func (s *Submitter) From() common.Address { return s.from }
 func (s *Submitter) Receipt(ctx context.Context, hash common.Hash) (*types.Receipt, error) {
 	receipt, err := s.client.TransactionReceipt(ctx, hash)
@@ -139,6 +164,31 @@ func (s *Submitter) SubmitRoot(ctx context.Context, distributor, rewardsUpdater 
 }
 
 func (s *Submitter) LastTxMetadata() TxMetadata { return s.lastTx }
+
+// EpochStatus returns the distributor's on-chain status for an epoch.
+// A root is safe to advertise as confirmed only once this is Claimable.
+func (s *Submitter) EpochStatus(ctx context.Context, distributor string, epochID *big.Int) (uint8, error) {
+	if !common.IsHexAddress(distributor) {
+		return 0, fmt.Errorf("invalid distributor address")
+	}
+	if epochID == nil || epochID.Sign() <= 0 || epochID.BitLen() > 256 {
+		return 0, fmt.Errorf("epoch ID must be a positive uint256")
+	}
+	to := common.HexToAddress(distributor)
+	data, err := s.abi.Pack("epochs", epochID)
+	if err != nil {
+		return 0, err
+	}
+	raw, err := s.client.CallContract(ctx, ethereum.CallMsg{To: &to, Data: data}, nil)
+	if err != nil {
+		return 0, err
+	}
+	values, err := s.abi.Unpack("epochs", raw)
+	if err != nil {
+		return 0, err
+	}
+	return values[2].(uint8), nil
+}
 
 // ReplaceRoot resends the same root using the original nonce and higher fees.
 func (s *Submitter) ReplaceRoot(ctx context.Context, distributor, rewardsUpdater string, epochID *big.Int, root [32]byte, totalReward *big.Int, nonce, gasLimit uint64, oldTip, oldFee *big.Int) (common.Hash, error) {

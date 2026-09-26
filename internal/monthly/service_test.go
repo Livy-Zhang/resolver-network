@@ -2,6 +2,7 @@ package monthly
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -15,14 +16,14 @@ import (
 )
 
 type fakeStore struct {
-	rates   map[string]database.RateSnapshot
-	saved   []database.MonthlyAllocation
-	frozen  []database.RateChange
-	saves   int
-	freezes int
-	root    database.RootSubmission
-	hash    string
-	saveErr error
+	rates     map[string]database.RateSnapshot
+	saved     []database.MonthlyAllocation
+	frozen    []database.RateChange
+	saves     int
+	freezes   int
+	root      database.RootSubmission
+	hash      string
+	saveErr   error
 	freezeErr error
 }
 
@@ -58,6 +59,7 @@ type fakeGraph struct {
 	events  []delegation.Event
 	changes []graph.RewardRateEvent
 	meta    graph.Meta
+	rateErr error
 }
 
 func (f fakeGraph) Meta(context.Context) (graph.Meta, error) { return f.meta, nil }
@@ -68,7 +70,7 @@ func (f fakeGraph) Events(context.Context, *time.Time, time.Time, int64) ([]dele
 	return f.events, nil
 }
 func (f fakeGraph) RewardRateEvents(context.Context, time.Time, time.Time, int64) ([]graph.RewardRateEvent, error) {
-	return f.changes, nil
+	return f.changes, f.rateErr
 }
 
 type fakeChain struct{ finalized ethereum.Block }
@@ -109,6 +111,25 @@ func TestAggregateRejectsSubgraphBehindFinalizedBlock(t *testing.T) {
 	}
 	if len(store.saved) != 0 {
 		t.Fatalf("settlement was saved despite an unsafe subgraph")
+	}
+}
+
+func TestAggregateSavesSettlementBeforeRejectingAnomalousNextRateHistory(t *testing.T) {
+	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeStore{rates: map[string]database.RateSnapshot{
+		"resolver": {Resolver: "resolver", Distributor: "distributor", RewardToken: "token", RewardRate: "1"},
+	}}
+	service := Service{
+		DB:       store,
+		Graph:    fakeGraph{meta: graph.Meta{BlockNumber: 100}, rateErr: errors.New("anomalous reward-rate event bad: MISSING_DISTRIBUTOR")},
+		Ethereum: fakeChain{finalized: ethereum.Block{Number: 100, Timestamp: month.AddDate(0, 1, 1)}},
+	}
+	_, err := service.Aggregate(context.Background(), month)
+	if err == nil || !strings.Contains(err.Error(), "MISSING_DISTRIBUTOR") {
+		t.Fatalf("err=%v", err)
+	}
+	if store.saves != 1 {
+		t.Fatalf("settlement saves=%d, want 1", store.saves)
 	}
 }
 
@@ -156,8 +177,12 @@ func TestAggregateStopsWhenSettlementSaveFails(t *testing.T) {
 	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{saveErr: context.DeadlineExceeded}
 	service := Service{DB: store, Graph: fakeGraph{meta: graph.Meta{BlockNumber: 100}}, Ethereum: fakeChain{finalized: ethereum.Block{Number: 100, Timestamp: month.AddDate(0, 1, 1)}}}
-	if _, err := service.Aggregate(context.Background(), month); err == nil || !strings.Contains(err.Error(), "deadline") { t.Fatalf("err=%v", err) }
-	if store.freezes != 1 { t.Fatalf("freeze calls=%d, expected bootstrap only", store.freezes) }
+	if _, err := service.Aggregate(context.Background(), month); err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("err=%v", err)
+	}
+	if store.freezes != 1 {
+		t.Fatalf("freeze calls=%d, expected bootstrap only", store.freezes)
+	}
 }
 
 func TestAggregateReturnsRateFreezeFailure(t *testing.T) {
@@ -165,18 +190,26 @@ func TestAggregateReturnsRateFreezeFailure(t *testing.T) {
 	resolver := "0x0000000000000000000000000000000000000001"
 	store := &fakeStore{rates: map[string]database.RateSnapshot{resolver: {RewardRate: "1", Distributor: "0x0000000000000000000000000000000000000002"}}, freezeErr: context.Canceled}
 	service := Service{DB: store, Graph: fakeGraph{meta: graph.Meta{BlockNumber: 100}}, Ethereum: fakeChain{finalized: ethereum.Block{Number: 100, Timestamp: month.AddDate(0, 1, 1)}}}
-	if _, err := service.Aggregate(context.Background(), month); err == nil || !strings.Contains(err.Error(), "canceled") { t.Fatalf("err=%v", err) }
+	if _, err := service.Aggregate(context.Background(), month); err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestAggregateFailureMetrics(t *testing.T) {
 	started, failed := metrics.SettlementsStarted.Value(), metrics.SettlementsFailed.Value()
 	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	s := Service{DB: &fakeStore{}, Graph: fakeGraph{meta: graph.Meta{BlockNumber: 1}}, Ethereum: fakeChain{finalized: ethereum.Block{Number: 2, Timestamp: month.AddDate(0, 1, 1)}}}
-	if _, err := s.Aggregate(context.Background(), month); err == nil { t.Fatal("expected finality error") }
-	if metrics.SettlementsStarted.Value() != started+1 || metrics.SettlementsFailed.Value() != failed+1 { t.Fatal("settlement failure metrics not incremented") }
+	if _, err := s.Aggregate(context.Background(), month); err == nil {
+		t.Fatal("expected finality error")
+	}
+	if metrics.SettlementsStarted.Value() != started+1 || metrics.SettlementsFailed.Value() != failed+1 {
+		t.Fatal("settlement failure metrics not incremented")
+	}
 }
 
 func TestFreezeNextRatesRejectsIncompleteEvent(t *testing.T) {
 	s := Service{DB: &fakeStore{}}
-	if err := s.freezeNextRates(context.Background(), time.Now(), []graph.RewardRateEvent{{ID: "bad"}}); err == nil { t.Fatal("expected invalid rate event") }
+	if err := s.freezeNextRates(context.Background(), time.Now(), []graph.RewardRateEvent{{ID: "bad"}}); err == nil {
+		t.Fatal("expected invalid rate event")
+	}
 }

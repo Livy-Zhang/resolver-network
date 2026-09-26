@@ -317,7 +317,7 @@ func TestListPendingRootSubmissionsHandlesTimeoutAndPermanentFailure(t *testing.
 	if _, err = db.Pool.Exec(ctx, `INSERT INTO monthly_root_submissions(month_start,resolver_address,distributor_address,reward_token_address,reward_rate,total_reward,epoch_id,merkle_root,root_submission_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'failed_permanent')`, args...); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := db.ListPendingRootSubmissions(ctx, 100)
+	rows, err := db.ListPendingRootSubmissions(ctx, month, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

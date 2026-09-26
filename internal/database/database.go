@@ -118,11 +118,29 @@ type MonthlyAllocation struct {
 }
 
 type MonthlyRewardDetail struct {
-	Resolver string `json:"resolver"`; Distributor string `json:"distributor"`; RewardToken string `json:"rewardToken"`; RewardRate string `json:"rewardRate"`; Delegator string `json:"delegator"`; DelegationWeight string `json:"delegationWeight"`; RewardAmount string `json:"rewardAmount"`; TotalReward string `json:"totalReward"`; EpochID string `json:"epochId"`; MerkleRoot string `json:"merkleRoot"`; Proof []string `json:"merkleProof"`
+	Resolver         string   `json:"resolver"`
+	Distributor      string   `json:"distributor"`
+	RewardToken      string   `json:"rewardToken"`
+	RewardRate       string   `json:"rewardRate"`
+	Delegator        string   `json:"delegator"`
+	DelegationWeight string   `json:"delegationWeight"`
+	RewardAmount     string   `json:"rewardAmount"`
+	TotalReward      string   `json:"totalReward"`
+	EpochID          string   `json:"epochId"`
+	MerkleRoot       string   `json:"merkleRoot"`
+	Proof            []string `json:"merkleProof"`
 }
 
 type MerkleProofSubmission struct {
-	Resolver string `json:"resolver"`; Distributor string `json:"distributor"`; RewardToken string `json:"rewardToken"`; RewardRate string `json:"rewardRate"`; TotalReward string `json:"totalReward"`; EpochID string `json:"epochId"`; MerkleRoot string `json:"merkleRoot"`; Status string `json:"status"`; TxHash string `json:"txHash"`
+	Resolver    string `json:"resolver"`
+	Distributor string `json:"distributor"`
+	RewardToken string `json:"rewardToken"`
+	RewardRate  string `json:"rewardRate"`
+	TotalReward string `json:"totalReward"`
+	EpochID     string `json:"epochId"`
+	MerkleRoot  string `json:"merkleRoot"`
+	Status      string `json:"status"`
+	TxHash      string `json:"txHash"`
 }
 
 type RootSubmission struct {
@@ -149,11 +167,11 @@ type PendingRootSubmission struct {
 	Attempts                                                                int
 }
 
-func (d *DB) ListPendingRootSubmissions(ctx context.Context, limit int) ([]PendingRootSubmission, error) {
+func (d *DB) ListPendingRootSubmissions(ctx context.Context, month time.Time, limit int) ([]PendingRootSubmission, error) {
 	if limit < 1 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := d.Pool.Query(ctx, `SELECT r.month_start,r.resolver_address,r.distributor_address,r.rewards_updater,r.epoch_id::text,r.merkle_root,r.total_reward::text,COALESCE(r.root_submission_tx_hash,''),r.root_submission_status,r.root_submission_nonce,r.root_submission_gas_limit,r.root_submission_gas_tip_cap::text,r.root_submission_gas_fee_cap::text,r.root_submission_submitted_at,r.root_submission_attempts FROM monthly_root_submissions r JOIN monthly_workflows w ON w.month_start=r.month_start AND w.status IN ('root_pending','root_processing','confirmed') WHERE r.root_submission_status IN ('not_submitted','submitted') OR (r.root_submission_status='processing' AND r.updated_at < now() - interval '20 minutes') OR (r.root_submission_status='failed' AND (r.next_retry_at IS NULL OR r.next_retry_at <= now())) ORDER BY r.month_start,r.resolver_address LIMIT $1`, limit)
+	rows, err := d.Pool.Query(ctx, `SELECT r.month_start,r.resolver_address,r.distributor_address,r.rewards_updater,r.epoch_id::text,r.merkle_root,r.total_reward::text,COALESCE(r.root_submission_tx_hash,''),r.root_submission_status,r.root_submission_nonce,r.root_submission_gas_limit,r.root_submission_gas_tip_cap::text,r.root_submission_gas_fee_cap::text,r.root_submission_submitted_at,r.root_submission_attempts FROM monthly_root_submissions r JOIN monthly_workflows w ON w.month_start=r.month_start AND w.status IN ('root_pending','root_processing','confirmed') WHERE r.month_start=$1 AND (r.root_submission_status IN ('not_submitted','submitted') OR (r.root_submission_status='processing' AND r.updated_at < now() - interval '20 minutes') OR (r.root_submission_status='failed' AND (r.next_retry_at IS NULL OR r.next_retry_at <= now()))) ORDER BY r.month_start,r.resolver_address LIMIT $2`, month, limit)
 	if err != nil {
 		return nil, err
 	}

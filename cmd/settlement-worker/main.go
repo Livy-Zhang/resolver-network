@@ -42,6 +42,7 @@ func Run(ctx context.Context, args []string, cfg config.Config) error {
 		return fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	m := time.Now().UTC()
+	m = time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
 	var err error
 	if *monthArg != "" {
 		m, err = time.Parse("200601", *monthArg)

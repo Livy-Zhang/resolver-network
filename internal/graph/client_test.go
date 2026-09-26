@@ -177,15 +177,72 @@ func TestEventsRejectsStalledCursor(t *testing.T) {
 
 func TestConvertRejectsMalformedEventFields(t *testing.T) {
 	cases := []result{
-		{Data: struct { D []row `json:"delegatedEvents"`; U []row `json:"undelegatedEvents"`; R []row `json:"redelegatedEvents"` }{D: []row{{ID: "", Delegator: "d", Resolver: "r", Amount: "1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}},
-		{Data: struct { D []row `json:"delegatedEvents"`; U []row `json:"undelegatedEvents"`; R []row `json:"redelegatedEvents"` }{D: []row{{ID: "x", Delegator: "d", Resolver: "r", Amount: "-1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}},
+		{Data: struct {
+			D []row `json:"delegatedEvents"`
+			U []row `json:"undelegatedEvents"`
+			R []row `json:"redelegatedEvents"`
+		}{D: []row{{ID: "", Delegator: "d", Resolver: "r", Amount: "1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}},
+		{Data: struct {
+			D []row `json:"delegatedEvents"`
+			U []row `json:"undelegatedEvents"`
+			R []row `json:"redelegatedEvents"`
+		}{D: []row{{ID: "x", Delegator: "d", Resolver: "r", Amount: "-1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}},
 	}
-	for _, input := range cases { if _, err := convert(input); err == nil { t.Fatal("expected malformed event error") } }
-	badRedelegation := result{Data: struct { D []row `json:"delegatedEvents"`; U []row `json:"undelegatedEvents"`; R []row `json:"redelegatedEvents"` }{R: []row{{ID: "r", Delegator: "d", Amount: "1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}}
-	if _, err := convert(badRedelegation); err == nil { t.Fatal("expected redelegation resolver error") }
+	for _, input := range cases {
+		if _, err := convert(input); err == nil {
+			t.Fatal("expected malformed event error")
+		}
+	}
+	badRedelegation := result{Data: struct {
+		D []row `json:"delegatedEvents"`
+		U []row `json:"undelegatedEvents"`
+		R []row `json:"redelegatedEvents"`
+	}{R: []row{{ID: "r", Delegator: "d", Amount: "1", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}}}}
+	if _, err := convert(badRedelegation); err == nil {
+		t.Fatal("expected redelegation resolver error")
+	}
+}
+
+func TestConvertRejectsAnomalousEvent(t *testing.T) {
+	input := result{Data: struct {
+		D []row `json:"delegatedEvents"`
+		U []row `json:"undelegatedEvents"`
+		R []row `json:"redelegatedEvents"`
+	}{
+		U: []row{{ID: "u", Delegator: "d", Resolver: "r", Amount: "1", Anomaly: "MISSING_DELEGATION", Timestamp: "1", BlockNumber: "1", LogIndex: "0"}},
+	}}
+	if _, err := convert(input); err == nil || !strings.Contains(err.Error(), "MISSING_DELEGATION") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestRewardRateEventsRejectsAnomaly(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(request.Query, "query Created") {
+			_, _ = w.Write([]byte(`{"data":{"distributorCreatedEvents":[]}}`))
+			return
+		}
+		if !strings.Contains(request.Query, "anomaly") {
+			t.Fatal("reward-rate query does not request anomaly")
+		}
+		_, _ = w.Write([]byte(`{"data":{"rewardRateUpdatedEvents":[{"id":"bad","anomaly":"MISSING_DISTRIBUTOR","timestamp":"1","blockNumber":"1","logIndex":"0"}]}}`))
+	}))
+	defer s.Close()
+	_, err := New(s.URL).RewardRateEvents(context.Background(), time.Unix(0, 0), time.Unix(2, 0), 1)
+	if err == nil || !strings.Contains(err.Error(), "MISSING_DISTRIBUTOR") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestNewWithOptionsDefaultsAndLimits(t *testing.T) {
 	c := NewWithOptions("", Options{Timeout: time.Second, PageSize: 2, MaxPages: 3, MaxEvents: 4})
-	if c.pageSize != 2 || c.maxPages != 3 || c.maxEvents != 4 || c.http == nil { t.Fatalf("unexpected options: %+v", c) }
+	if c.pageSize != 2 || c.maxPages != 3 || c.maxEvents != 4 || c.http == nil {
+		t.Fatalf("unexpected options: %+v", c)
+	}
 }

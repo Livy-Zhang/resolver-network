@@ -2,7 +2,7 @@
 
 This Go service runs a monthly settlement task. It reads delegation events from The Graph, calculates `delegatedAmount × durationSeconds` for each natural month, and persists the result in PostgreSQL.
 
-Reward periods use UTC boundaries. Configure the cloud-server scheduler to trigger the task at `00:30 UTC` on the first day of each month. The allocation formula is `delegatedAmount × durationSeconds × rewardRate / 365 days / 1e18`.
+Reward periods use UTC boundaries. Configure the cloud-server scheduler to trigger the task at `00:30 UTC` on the first day of each month. The allocation formula is `delegatedAmount × durationSeconds × rewardRate / 365 days / 1e18`. This uses the standard APR convention of a fixed 365-day year; leap years do not change the denominator to 366 days.
 
 ## Docker development
 
@@ -58,6 +58,30 @@ docker compose --profile workers run --rm monthly-workflow
 ```
 
 `monthly-workflow` runs `settlement-worker`, then `merkle-worker`, then `root-worker`; it stops if any step fails. Docker Compose does not schedule this command by itself. For automatic monthly execution on a cloud server, trigger this command with a server scheduler such as a systemd timer.
+
+The monthly settlement workflow is idempotent: repeated runs for the same month produce the same result. It does not implement a distributed mutex for settlement workers, so deployments must run a single instance. Database migrations use a PostgreSQL advisory lock to prevent concurrent execution.
+
+All three workers use the previous complete UTC calendar month when `--month` is omitted.
+Pass `--month YYYYMM` to select a different period; the workflow passes the same selected month
+to every worker. In particular, `root-worker` queries and processes only root submissions for
+that month, never pending submissions from other months.
+
+Submitting a Merkle root does not make rewards claimable. Each resolver must approve its
+RewardsDistributor to spend that epoch's `totalReward` and then call
+`confirmRoot(epochId)` from the resolver account. The distributor moves the epoch from
+`Pending` to `Claimable` only after that transfer succeeds. `root-worker` records a root as
+`confirmed` only after its on-chain epoch status is `Claimable`; a submitted `Pending` root is
+therefore intentionally reported as not yet confirmed.
+
+### Resolver and service responsibilities
+
+The resolver owns and signs the `approve` and `confirmRoot` transactions with its own wallet.
+The service never stores a resolver private key and never transfers a resolver's reward tokens.
+It exposes `GET /v1/merkle-proof-submission?month=YYYYMM` so a resolver can obtain the
+distributor address, epoch ID, total reward, root submission transaction hash, and current
+status needed by its wallet or frontend. The service's `root-worker` is an observer only: it
+polls the distributor epoch and updates the API status to `confirmed` after the resolver's
+confirmation has made the epoch `Claimable`.
 
 ## Production release
 

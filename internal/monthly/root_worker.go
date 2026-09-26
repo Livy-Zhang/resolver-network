@@ -1,4 +1,5 @@
 package monthly
+
 // RootWorker processes persisted root submissions
 import (
 	"context"
@@ -13,13 +14,14 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"resolver-network/internal/database"
 	"resolver-network/internal/metrics"
+	"resolver-network/internal/rewards"
 )
 
 // RootWorker processes persisted root submissions independently of settlement.
 type RootSubmissionStore interface {
-	ListPendingRootSubmissions(context.Context, int) ([]database.PendingRootSubmission, error)
+	ListPendingRootSubmissions(context.Context, time.Time, int) ([]database.PendingRootSubmission, error)
 	MarkRootProcessing(context.Context, time.Time, string) error
-	SetRootSubmissionHash(context.Context, time.Time, string, string) error
+	RecordRootSubmission(context.Context, time.Time, string, string, int64, int64, string, string) error
 	MarkRootConfirmed(context.Context, time.Time, string) error
 	MarkRootFailed(context.Context, time.Time, string, string) error
 	MarkRootPermanentFailure(context.Context, time.Time, string, string) error
@@ -28,11 +30,19 @@ type RootSubmissionStore interface {
 // RootSubmitter is the narrow transaction interface required by RootWorker.
 type RootSubmitter interface {
 	EnsureRoot(context.Context, string, string, *big.Int, [32]byte, *big.Int) (common.Hash, bool, error)
+	LastTxMetadata() rewards.TxMetadata
 }
+
+type epochStatusReader interface {
+	EpochStatus(context.Context, string, *big.Int) (uint8, error)
+}
+
+const epochStatusClaimable uint8 = 2
 
 type RootWorker struct {
 	DB        RootSubmissionStore
 	Submitter RootSubmitter
+	Month     time.Time
 	BatchSize int
 }
 
@@ -68,6 +78,14 @@ func queryReceipt(ctx context.Context, submitter RootSubmitter, txHash string) (
 	return receipt, nil
 }
 
+func queryEpochStatus(ctx context.Context, submitter RootSubmitter, distributor string, epoch *big.Int) (uint8, error) {
+	reader, ok := submitter.(epochStatusReader)
+	if !ok {
+		return 0, fmt.Errorf("root submitter does not support epoch status queries")
+	}
+	return reader.EpochStatus(ctx, distributor, epoch)
+}
+
 func (w RootWorker) RunOnce(ctx context.Context) error {
 	if w.DB == nil || w.Submitter == nil {
 		return fmt.Errorf("root worker dependencies are required")
@@ -75,7 +93,7 @@ func (w RootWorker) RunOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rows, err := w.DB.ListPendingRootSubmissions(ctx, w.BatchSize)
+	rows, err := w.DB.ListPendingRootSubmissions(ctx, w.Month, w.BatchSize)
 	if err != nil {
 		return err
 	}
@@ -149,10 +167,22 @@ func (w RootWorker) RunOnce(ctx context.Context) error {
 				continue
 			}
 			if receipt.Status == 1 {
+				epoch, ok := new(big.Int).SetString(row.EpochID, 10)
+				if !ok {
+					return fmt.Errorf("invalid epoch id %q", row.EpochID)
+				}
+				status, err := queryEpochStatus(ctx, w.Submitter, row.Distributor, epoch)
+				if err != nil {
+					return fmt.Errorf("query epoch status: %w", err)
+				}
+				if status != epochStatusClaimable {
+					slog.Info("root submitted but awaiting resolver confirmation", append(logAttrs, "on_chain_epoch_status", status)...)
+					continue
+				}
 				if err = w.DB.MarkRootConfirmed(ctx, row.Month, row.Resolver); err != nil {
 					return err
 				}
-				slog.Info("root transaction confirmed", append(logAttrs, "status", rootStatusConfirmed)...)
+				slog.Info("root epoch claimable", append(logAttrs, "status", rootStatusConfirmed)...)
 				metrics.RootConfirmed.Add(1)
 			} else {
 				_ = w.DB.MarkRootPermanentFailure(ctx, row.Month, row.Resolver, "transaction reverted")
@@ -196,7 +226,14 @@ func (w RootWorker) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if submitted {
-			if err = w.DB.SetRootSubmissionHash(ctx, row.Month, row.Resolver, hash.Hex()); err != nil {
+			metadata := w.Submitter.LastTxMetadata()
+			if metadata.GasTipCap == nil || metadata.GasFeeCap == nil {
+				return fmt.Errorf("submitted root transaction is missing gas metadata")
+			}
+			if metadata.Nonce > uint64(^uint64(0)>>1) || metadata.GasLimit > uint64(^uint64(0)>>1) {
+				return fmt.Errorf("submitted root transaction metadata exceeds database integer range")
+			}
+			if err = w.DB.RecordRootSubmission(ctx, row.Month, row.Resolver, hash.Hex(), int64(metadata.Nonce), int64(metadata.GasLimit), metadata.GasTipCap.String(), metadata.GasFeeCap.String()); err != nil {
 				return err
 			}
 			slog.Info("root transaction submitted", append(logAttrs, "tx_hash", hash.Hex(), "attempt", row.Attempts+1, "status", rootStatusSubmitted)...)
@@ -221,7 +258,7 @@ func (w RootWorker) RunUntilIdle(ctx context.Context, interval time.Duration) er
 		interval = time.Minute
 	}
 	for {
-		rows, err := w.DB.ListPendingRootSubmissions(ctx, w.BatchSize)
+		rows, err := w.DB.ListPendingRootSubmissions(ctx, w.Month, w.BatchSize)
 		if err != nil {
 			return err
 		}

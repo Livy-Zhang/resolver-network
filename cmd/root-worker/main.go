@@ -34,15 +34,19 @@ func main() {
 
 func Run(ctx context.Context, args []string, cfg config.Config) error {
 	fs := flag.NewFlagSet("root-worker", flag.ContinueOnError)
-	month := fs.String("month", "", "YYYYMM; reserved for workflow compatibility")
+	monthArg := fs.String("month", "", "YYYYMM (defaults to the previous UTC month)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
-	if *month != "" {
-		if _, err := time.Parse("200601", *month); err != nil {
+	month := time.Now().UTC()
+	month = time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	if *monthArg != "" {
+		var err error
+		month, err = time.Parse("200601", *monthArg)
+		if err != nil {
 			return fmt.Errorf("invalid month: %w", err)
 		}
 	}
@@ -56,7 +60,7 @@ func Run(ctx context.Context, args []string, cfg config.Config) error {
 		return fmt.Errorf("submitter failed: %w", err)
 	}
 	defer submitter.Close()
-	worker := monthly.RootWorker{DB: db, Submitter: submitter, BatchSize: 50}
+	worker := monthly.RootWorker{DB: db, Submitter: submitter, Month: month, BatchSize: 50}
 	slog.Info("root transaction worker started", "status", "started")
 	if err = worker.RunUntilIdle(ctx, time.Minute); err != nil && ctx.Err() == nil {
 		return err
